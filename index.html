@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>扫雷</title>
+<style>
+  :root {
+    --cell: 38px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(160deg, #eef2f7, #dde5ef);
+    color: #1f2937;
+  }
+  .game {
+    background: #ffffff;
+    padding: 24px 28px 28px;
+    border-radius: 16px;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+    text-align: center;
+  }
+  h1 {
+    margin: 0 0 16px;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 1px;
+  }
+  .hud {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+  .stat {
+    min-width: 84px;
+    padding: 8px 12px;
+    background: #f1f5f9;
+    border-radius: 8px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    font-size: 16px;
+  }
+  .restart {
+    width: 44px;
+    height: 44px;
+    font-size: 22px;
+    border: none;
+    border-radius: 10px;
+    background: #e2e8f0;
+    cursor: pointer;
+    transition: transform 0.08s, background 0.15s;
+  }
+  .restart:hover { background: #cbd5e1; }
+  .restart:active { transform: scale(0.92); }
+  .board {
+    display: grid;
+    grid-template-columns: repeat(9, var(--cell));
+    gap: 3px;
+    padding: 10px;
+    background: #e2e8f0;
+    border-radius: 10px;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .cell {
+    width: var(--cell);
+    height: var(--cell);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 700;
+    border-radius: 5px;
+    background: #b9c4d3;
+    box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.12);
+    cursor: pointer;
+    transition: background 0.08s;
+  }
+  .cell:not(.revealed):hover { background: #a9b6c8; }
+  .cell.revealed {
+    background: #f8fafc;
+    box-shadow: inset 0 0 0 1px #e2e8f0;
+    cursor: default;
+  }
+  .cell.flagged { background: #fde68a; }
+  .cell.mine { background: #fecaca; }
+  .cell.mine-hit { background: #ef4444; }
+  .cell.wrong-flag { background: #fecaca; }
+  .n1 { color: #1d6fce; }
+  .n2 { color: #2e9e44; }
+  .n3 { color: #d73737; }
+  .n4 { color: #1b3fa8; }
+  .n5 { color: #8a2e2e; }
+  .n6 { color: #0e8a8a; }
+  .n7 { color: #374151; }
+  .n8 { color: #6b7280; }
+  #message {
+    margin-top: 14px;
+    height: 22px;
+    font-weight: 600;
+    color: #334155;
+  }
+</style>
+</head>
+<body>
+<div class="game">
+  <h1>扫雷</h1>
+  <div class="hud">
+    <div class="stat">💣 <span id="mineCount">10</span></div>
+    <button class="restart" id="restart" title="重新开始">😊</button>
+    <div class="stat">⏱ <span id="timer">0</span></div>
+  </div>
+  <div class="board" id="board"></div>
+  <div id="message"></div>
+</div>
+
+<script>
+const ROWS = 9;
+const COLS = 9;
+const MINES = 10;
+
+let board = [];          // 2D 数组：{ mine, revealed, flagged, adjacent }
+let firstClick = true;   // 尚未首次点击（雷还没埋）
+let gameOver = false;
+let won = false;
+let clickedMine = null;  // 踩中的雷坐标 { r, c }
+let flagCount = 0;
+let seconds = 0;
+let timerId = null;
+
+const boardEl = document.getElementById('board');
+const mineCountEl = document.getElementById('mineCount');
+const timerEl = document.getElementById('timer');
+const messageEl = document.getElementById('message');
+const restartEl = document.getElementById('restart');
+
+function createEmptyBoard() {
+  board = [];
+  for (let r = 0; r < ROWS; r++) {
+    board[r] = [];
+    for (let c = 0; c < COLS; c++) {
+      board[r][c] = { mine: false, revealed: false, flagged: false, adjacent: 0 };
+    }
+  }
+}
+
+function neighbors(r, c) {
+  const list = [];
+  for (let dr = -1; dr <= 1; dr++) {
+    for (let dc = -1; dc <= 1; dc++) {
+      if (dr === 0 && dc === 0) continue;
+      const nr = r + dr, nc = c + dc;
+      if (nr >= 0 && nr < ROWS && nc >= 0 && nc < COLS) list.push([nr, nc]);
+    }
+  }
+  return list;
+}
+
+// 埋雷：排除首点格子及其周围 8 格，保证首次点击必落在空白区
+function placeMines(safeR, safeC) {
+  const safe = new Set([`${safeR},${safeC}`]);
+  for (const [nr, nc] of neighbors(safeR, safeC)) safe.add(`${nr},${nc}`);
+
+  const candidates = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (!safe.has(`${r},${c}`)) candidates.push([r, c]);
+
+  // Fisher–Yates 洗牌后取前 MINES 个
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+  for (let i = 0; i < MINES; i++) {
+    const [r, c] = candidates[i];
+    board[r][c].mine = true;
+  }
+  calcAdjacent();
+}
+
+function calcAdjacent() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      let count = 0;
+      for (const [nr, nc] of neighbors(r, c)) if (board[nr][nc].mine) count++;
+      board[r][c].adjacent = count;
+    }
+  }
+}
+
+function startTimer() {
+  if (timerId) return;
+  timerId = setInterval(() => {
+    seconds++;
+    timerEl.textContent = seconds;
+  }, 1000);
+}
+
+function stopTimer() {
+  clearInterval(timerId);
+  timerId = null;
+}
+
+// 翻开：空白格（0）会带动周围区域扩散，旗子挡住扩散
+function reveal(r, c) {
+  const stack = [[r, c]];
+  while (stack.length) {
+    const [cr, cc] = stack.pop();
+    const cell = board[cr][cc];
+    if (cell.revealed || cell.flagged || cell.mine) continue;
+    cell.revealed = true;
+    if (cell.adjacent === 0) {
+      for (const [nr, nc] of neighbors(cr, cc)) {
+        const n = board[nr][nc];
+        if (!n.revealed && !n.flagged && !n.mine) stack.push([nr, nc]);
+      }
+    }
+  }
+}
+
+function onLeftClick(r, c) {
+  if (gameOver) return;
+  const cell = board[r][c];
+  if (cell.revealed || cell.flagged) return;
+
+  if (firstClick) {
+    placeMines(r, c);
+    firstClick = false;
+    startTimer();
+  }
+
+  if (cell.mine) {
+    lose(r, c);
+    return;
+  }
+
+  reveal(r, c);
+  if (checkWin()) win();
+  render();
+}
+
+function onRightClick(r, c) {
+  if (gameOver) return;
+  const cell = board[r][c];
+  if (cell.revealed) return;
+
+  cell.flagged = !cell.flagged;
+  flagCount += cell.flagged ? 1 : -1;
+  mineCountEl.textContent = MINES - flagCount;
+  render();
+}
+
+function checkWin() {
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (!board[r][c].mine && !board[r][c].revealed) return false;
+  return true;
+}
+
+function win() {
+  gameOver = true;
+  won = true;
+  stopTimer();
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (board[r][c].mine) board[r][c].flagged = true;
+  flagCount = MINES;
+  mineCountEl.textContent = 0;
+  restartEl.textContent = '😎';
+  messageEl.textContent = `🎉 你赢了！用时 ${seconds} 秒`;
+  render();
+}
+
+function lose(r, c) {
+  gameOver = true;
+  won = false;
+  stopTimer();
+  clickedMine = { r, c };
+  restartEl.textContent = '😵';
+  messageEl.textContent = '💥 踩雷了，点 😵 再来一局';
+  render();
+}
+
+function render() {
+  boardEl.innerHTML = '';
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const cell = board[r][c];
+      const div = document.createElement('div');
+      div.className = 'cell';
+      div.dataset.r = r;
+      div.dataset.c = c;
+
+      if (cell.revealed) {
+        div.classList.add('revealed');
+        if (cell.mine) {
+          div.classList.add('mine');
+          div.textContent = '💣';
+          if (clickedMine && clickedMine.r === r && clickedMine.c === c) {
+            div.classList.add('mine-hit');
+          }
+        } else if (cell.adjacent > 0) {
+          div.classList.add('n' + cell.adjacent);
+          div.textContent = cell.adjacent;
+        }
+      } else if (cell.flagged) {
+        div.classList.add('flagged');
+        div.textContent = '🚩';
+        // 踩雷后：标出插错位置的旗（旗子不在雷上）
+        if (gameOver && !won && !cell.mine) {
+          div.classList.add('wrong-flag');
+          div.textContent = '❌';
+        }
+      } else if (gameOver && !won && cell.mine) {
+        // 踩雷后：翻开所有没被旗标记的雷
+        div.classList.add('revealed', 'mine');
+        div.textContent = '💣';
+      }
+
+      boardEl.appendChild(div);
+    }
+  }
+}
+
+function reset() {
+  stopTimer();
+  seconds = 0;
+  flagCount = 0;
+  firstClick = true;
+  gameOver = false;
+  won = false;
+  clickedMine = null;
+  timerEl.textContent = '0';
+  mineCountEl.textContent = MINES;
+  restartEl.textContent = '😊';
+  messageEl.textContent = '';
+  createEmptyBoard();
+  render();
+}
+
+// 事件委托：左键翻开，右键插旗
+boardEl.addEventListener('click', (e) => {
+  const cell = e.target.closest('.cell');
+  if (!cell) return;
+  onLeftClick(Number(cell.dataset.r), Number(cell.dataset.c));
+});
+
+boardEl.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const cell = e.target.closest('.cell');
+  if (!cell) return;
+  onRightClick(Number(cell.dataset.r), Number(cell.dataset.c));
+});
+
+restartEl.addEventListener('click', reset);
+
+reset();
+</script>
+</body>
+</html>
